@@ -1,7 +1,12 @@
 import SwiftUI
 
+enum MoveDirection { case up, down }
+
 struct RemoteRow: View {
     let remote: Remote
+    var index: Int = 0
+    var total: Int = 1
+    var onMove: ((MoveDirection) -> Void)?
     @EnvironmentObject var rclone: RcloneService
     @State private var isHovering = false
 
@@ -15,6 +20,36 @@ struct RemoteRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
+            // Reorder buttons (only in popover, shown on hover)
+            if onMove != nil {
+                VStack(spacing: 0) {
+                    Button {
+                        onMove?(.up)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 8, weight: .bold))
+                            .frame(width: 14, height: 12)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .disabled(index == 0)
+                    .opacity(index == 0 ? 0.3 : 1)
+
+                    Button {
+                        onMove?(.down)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .bold))
+                            .frame(width: 14, height: 12)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .disabled(index >= total - 1)
+                    .opacity(index >= total - 1 ? 0.3 : 1)
+                }
+                .opacity(isHovering ? 1 : 0)
+            }
+
             // Icon
             ZStack {
                 RoundedRectangle(cornerRadius: 6)

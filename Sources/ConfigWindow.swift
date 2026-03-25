@@ -41,37 +41,42 @@ struct ConfigWindow: View {
         HSplitView {
             // Sidebar
             VStack(spacing: 0) {
-                List(rclone.remotes, selection: $selectedRemoteId) { remote in
-                    HStack(spacing: 10) {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 6)
-                                .fill(gradientFor(remote.type))
-                                .frame(width: 28, height: 28)
-                            Image(systemName: remote.typeIcon)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundStyle(.white)
-                        }
+                List(selection: $selectedRemoteId) {
+                    ForEach(rclone.remotes) { remote in
+                        HStack(spacing: 10) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(gradientFor(remote.type))
+                                    .frame(width: 28, height: 28)
+                                Image(systemName: remote.typeIcon)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(.white)
+                            }
 
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(remote.name)
-                                .font(.system(size: 12, weight: .medium))
-                                .lineLimit(1)
-                            Text(remote.displayType)
-                                .font(.system(size: 10))
-                                .foregroundStyle(.secondary)
-                        }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(remote.name)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .lineLimit(1)
+                                Text(remote.displayType)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
 
-                        Spacer()
+                            Spacer()
 
-                        if rclone.mountStatus(for: remote) == .mounted {
-                            Circle()
-                                .fill(.green)
-                                .frame(width: 7, height: 7)
-                                .shadow(color: .green.opacity(0.5), radius: 3)
+                            if rclone.mountStatus(for: remote) == .mounted {
+                                Circle()
+                                    .fill(.green)
+                                    .frame(width: 7, height: 7)
+                                    .shadow(color: .green.opacity(0.5), radius: 3)
+                            }
                         }
+                        .padding(.vertical, 2)
+                        .tag(remote.id)
                     }
-                    .padding(.vertical, 2)
-                    .tag(remote.id)
+                    .onMove { source, destination in
+                        rclone.moveRemotes(from: source, to: destination)
+                    }
                 }
 
                 Divider()

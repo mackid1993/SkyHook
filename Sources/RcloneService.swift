@@ -239,10 +239,29 @@ class RcloneService: ObservableObject {
         }
         do {
             let content = try String(contentsOf: rcloneConfigPath, encoding: .utf8)
-            remotes = parseConfig(content)
+            var parsed = parseConfig(content)
+            // Apply saved ordering
+            let order = UserDefaults.standard.stringArray(forKey: "remoteOrder") ?? []
+            if !order.isEmpty {
+                parsed.sort { a, b in
+                    let ia = order.firstIndex(of: a.name) ?? Int.max
+                    let ib = order.firstIndex(of: b.name) ?? Int.max
+                    return ia < ib
+                }
+            }
+            remotes = parsed
         } catch {
             remotes = []
         }
+    }
+
+    func moveRemotes(from source: IndexSet, to destination: Int) {
+        remotes.move(fromOffsets: source, toOffset: destination)
+        saveRemoteOrder()
+    }
+
+    private func saveRemoteOrder() {
+        UserDefaults.standard.set(remotes.map(\.name), forKey: "remoteOrder")
     }
 
     /// Rewrite a single remote's section in rclone.conf with the given config.

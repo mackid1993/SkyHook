@@ -210,9 +210,14 @@ struct MenuBarView: View {
     private var remoteListView: some View {
         ScrollView {
             LazyVStack(spacing: 6) {
-                ForEach(remotes) { remote in
-                    RemoteRow(remote: remote)
-                        .environmentObject(rclone)
+                ForEach(Array(remotes.enumerated()), id: \.element.id) { index, remote in
+                    RemoteRow(remote: remote, index: index, total: remotes.count) {
+                        direction in
+                        let dest = direction == .up ? index - 1 : index + 2
+                        rclone.moveRemotes(from: IndexSet(integer: index), to: dest)
+                        syncState()
+                    }
+                    .environmentObject(rclone)
                 }
             }
             .padding(10)
