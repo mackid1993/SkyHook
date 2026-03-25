@@ -18,7 +18,9 @@ A lightweight macOS menu bar app for mounting cloud storage as native Finder vol
 ## Requirements
 
 - macOS 14.0 (Sonoma) or later
-- rclone — install from within the app or via `brew install rclone`
+- [rclone](https://rclone.org) — SkyHook can download and install rclone for you, or you can install it yourself via `brew install rclone`
+
+> **Note:** SkyHook is not affiliated with the rclone project. rclone is an independent open-source tool licensed under the MIT license. SkyHook downloads rclone binaries directly from the [official rclone GitHub releases](https://github.com/rclone/rclone/releases).
 
 ## Build
 
