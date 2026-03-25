@@ -71,6 +71,17 @@ class RcloneService: ObservableObject {
         let path = installDir.appendingPathComponent("rclone").path
         isRcloneInstalled = FileManager.default.fileExists(atPath: path)
         Task { await setup() }
+
+        // Watch for volumes ejected from Finder
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didUnmountNotification, object: nil, queue: .main
+        ) { notification in
+            guard let volumePath = (notification.userInfo?[NSWorkspace.volumeURLUserInfoKey] as? URL)?.path else { return }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.handleExternalUnmount(volumePath: volumePath)
+            }
+        }
     }
 
     func setup() async {
@@ -822,6 +833,25 @@ class RcloneService: ObservableObject {
             }
             return (true, result?.stringValue)
         }.value
+    }
+
+    private func handleExternalUnmount(volumePath: String) {
+        for (name, hostname) in mountHostnames {
+            let expected = "\(defaultMountBase)/\(hostname)"
+            if volumePath == expected {
+                if let process = serverProcesses[name], process.isRunning {
+                    process.terminate()
+                }
+                serverProcesses.removeValue(forKey: name)
+                TransferMonitor.shared.unregisterRC(remoteName: name)
+                mountHostnames.removeValue(forKey: name)
+                mountPorts.removeValue(forKey: name)
+                retryStates.removeValue(forKey: name)
+                consecutiveFailures.removeValue(forKey: name)
+                mountStatuses[name] = .unmounted
+                break
+            }
+        }
     }
 
     func unmountAll() async {
