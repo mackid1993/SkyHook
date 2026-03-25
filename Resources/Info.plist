@@ -28,5 +28,9 @@
     <string>SkyHook</string>
     <key>NSAppleEventsUsageDescription</key>
     <string>SkyHook needs to control Finder to mount and eject cloud storage volumes.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>SkyHook connects to local rclone servers to mount cloud storage volumes.</string>
+    <key>NSRemovableVolumesUsageDescription</key>
+    <string>SkyHook needs access to mounted volumes to manage your cloud storage drives.</string>
 </dict>
 </plist>

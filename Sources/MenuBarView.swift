@@ -15,7 +15,6 @@ struct MenuBarView: View {
     @State private var rcloneVersion: String?
     @State private var updateAvailable: Bool = false
     @State private var statusMessage: String?
-
     private func syncState() {
         remotes = rclone.remotes
         mountStatuses = rclone.mountStatuses
@@ -218,7 +217,7 @@ struct MenuBarView: View {
             }
             .padding(10)
         }
-        .frame(maxHeight: 500)
+        .frame(maxHeight: 600)
     }
 
     // MARK: - Footer
@@ -247,10 +246,7 @@ struct MenuBarView: View {
             Spacer()
 
             Button {
-                Task {
-                    await rclone.cleanup()
-                    NSApp.terminate(nil)
-                }
+                NSApp.terminate(nil)
             } label: {
                 Text("Quit")
                     .font(.subheadline)

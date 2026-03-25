@@ -11,6 +11,7 @@ class TransferMonitor: ObservableObject {
     private var rcPorts: [String: Int] = [:]  // remote name -> RC port
     private var pollTimer: Timer?
     private var isPolling = false
+    private var emptyPollCount = 0  // consecutive polls with no active transfers
 
     struct TransferInfo: Identifiable {
         var id: String { name + remoteName }
@@ -143,6 +144,16 @@ class TransferMonitor: ObservableObject {
             }
         }
 
+        // Avoid flickering: only clear the transfer list after 3 consecutive
+        // empty polls (~9s), since rclone momentarily reports no active transfers
+        // between chunks.
+        if allTransfers.isEmpty && !transfers.isEmpty {
+            emptyPollCount += 1
+            if emptyPollCount < 3 { return }
+        } else {
+            emptyPollCount = 0
+        }
+
         transfers = allTransfers
         globalStats = combinedStats
     }
@@ -185,7 +196,8 @@ class TransferMonitor: ObservableObject {
             stats.totalTransfers = (json["totalTransfers"] as? Int) ?? 0
             stats.completedTransfers = (json["transfers"] as? Int) ?? 0
             stats.speed = (json["speed"] as? Double) ?? 0
-            stats.errors = (json["errors"] as? Int) ?? 0
+            // rclone accumulates harmless "errors" (e.g. Finder probing .DS_Store) — ignore them
+            stats.errors = 0
 
             if let transferring = json["transferring"] as? [[String: Any]] {
                 stats.activeTransfers = transferring.count
@@ -257,41 +269,38 @@ struct TransferActivityView: View {
                 }
 
                 // Individual transfers
-                ForEach(transfers) { transfer in
-                    HStack(spacing: 8) {
-                        Image(systemName: transfer.isUpload ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                            .foregroundStyle(transfer.isUpload ? .orange : .blue)
-                            .font(.caption)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(transfer.name)
-                                .font(.caption)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            if transfer.size > 0 {
-                                Text(transfer.sizeFormatted)
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
+                ScrollView {
+                    VStack(spacing: 4) {
+                        ForEach(transfers) { transfer in
+                            HStack(spacing: 8) {
+                                Image(systemName: transfer.isUpload ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
+                                    .foregroundStyle(transfer.isUpload ? .orange : .blue)
+                                    .font(.caption)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(transfer.name)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    if transfer.size > 0 {
+                                        Text(transfer.sizeFormatted)
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                                Spacer()
+                                if transfer.speed > 0 {
+                                    Text(transfer.speedFormatted)
+                                        .font(.caption2)
+                                        .monospacedDigit()
+                                        .foregroundStyle(.secondary)
+                                }
                             }
+                            .padding(8)
+                            .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
                         }
-                        Spacer()
-                        if transfer.speed > 0 {
-                            Text(transfer.speedFormatted)
-                                .font(.caption2)
-                                .monospacedDigit()
-                                .foregroundStyle(.secondary)
-                        }
-                        Button {
-                            Task { await TransferMonitor.shared.cancelTransfer(transfer) }
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
                     }
-                    .padding(8)
-                    .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 6))
                 }
+                .frame(maxHeight: 250)
             }
         }
         .onAppear {

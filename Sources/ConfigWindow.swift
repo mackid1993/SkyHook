@@ -3,23 +3,30 @@ import SwiftUI
 struct ConfigWindow: View {
     @EnvironmentObject var rclone: RcloneService
     @State private var selectedTab = "remotes"
+    static var pendingTab: String?
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            remotesTab
-                .tabItem { Label("Remotes", systemImage: "cloud.fill") }
-                .tag("remotes")
+        VStack(spacing: 0) {
+            TabView(selection: $selectedTab) {
+                remotesTab
+                    .tabItem { Label("Remotes", systemImage: "cloud.fill") }
+                    .tag("remotes")
 
-            advancedTab
-                .tabItem { Label("Performance", systemImage: "gauge.with.dots.needle.67percent") }
-                .tag("advanced")
-
-            settingsTab
-                .tabItem { Label("Settings", systemImage: "gear") }
-                .tag("settings")
+                settingsTab
+                    .tabItem { Label("Settings", systemImage: "gear") }
+                    .tag("settings")
+            }
         }
         .frame(minWidth: 680, minHeight: 520)
+        .onAppear {
+            if let tab = Self.pendingTab {
+                selectedTab = tab
+                Self.pendingTab = nil
+            }
+        }
     }
+
+    // advancedTab removed — settings are now per-remote in RemoteDetailView
 
     // MARK: - Remotes Tab
 
@@ -103,7 +110,7 @@ struct ConfigWindow: View {
                     } label: {
                         Image(systemName: "arrow.clockwise")
                     }
-                    .help("Reload config")
+                    .help("Reload rclone.conf (~/.config/rclone/rclone.conf)")
                 }
                 .padding(8)
                 .buttonStyle(.borderless)
@@ -141,119 +148,14 @@ struct ConfigWindow: View {
 
     // MARK: - Advanced / Performance Tab
 
-    private var advancedTab: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                // VFS Cache
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("VFS Cache", systemImage: "internaldrive.fill")
-                            .font(.headline)
-
-                        Text("Controls how rclone caches files locally for better performance.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        advancedField("Cache Mode", value: $rclone.vfsCacheMode,
-                                     help: "off, minimal, writes, full")
-                        advancedField("Cache Max Age", value: $rclone.vfsCacheMaxAge,
-                                     help: "e.g. 1h, 24h, 168h")
-                        advancedField("Cache Max Size", value: $rclone.vfsCacheMaxSize,
-                                     help: "e.g. 1G, 10G, 50G")
-                        advancedField("Cache Poll Interval", value: $rclone.vfsCachePollInterval,
-                                     help: "e.g. 1m, 5m, 30s")
-                    }
-                    .padding(8)
-                }
-
-                // Read Performance
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Read Performance", systemImage: "arrow.down.doc.fill")
-                            .font(.headline)
-
-                        advancedField("Read Chunk Size", value: $rclone.vfsReadChunkSize,
-                                     help: "e.g. 32M, 128M, 256M")
-                        advancedField("Read Ahead", value: $rclone.vfsReadAhead,
-                                     help: "e.g. 64M, 128M, 512M")
-                        advancedField("Buffer Size", value: $rclone.bufferSize,
-                                     help: "e.g. 0, 16M, 64M")
-                    }
-                    .padding(8)
-                }
-
-                // Network / Transfers
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Network", systemImage: "network")
-                            .font(.headline)
-
-                        advancedField("Parallel Transfers", value: $rclone.transfers,
-                                     help: "e.g. 4, 8, 16")
-                        advancedField("Dir Cache Time", value: $rclone.dirCacheTime,
-                                     help: "e.g. 5m, 30m, 1h")
-                        advancedField("Attr Timeout", value: $rclone.attrTimeout,
-                                     help: "e.g. 1s, 5s, 30s")
-                    }
-                    .padding(8)
-                }
-
-                // NFS Tuning
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("NFS Tuning", systemImage: "externaldrive.connected.to.line.below.fill")
-                            .font(.headline)
-
-                        advancedField("NFS Read Size", value: $rclone.nfsReadSize,
-                                     help: "Leave blank for default, e.g. 1048576")
-                    }
-                    .padding(8)
-                }
-
-                // Extra Flags
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Extra Flags", systemImage: "flag.fill")
-                            .font(.headline)
-
-                        Text("Additional rclone flags, space-separated. Applied to all serve commands.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                        TextField("--flag1 value1 --flag2 value2", text: $rclone.extraFlags)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.system(size: 12, design: .monospaced))
-                    }
-                    .padding(8)
-                }
-
-            }
-            .padding(32)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func advancedField(_ label: String, value: Binding<String>, help: String) -> some View {
-        HStack {
-            Text(label + ":")
-                .frame(width: 140, alignment: .trailing)
-                .foregroundStyle(.secondary)
-                .font(.system(size: 12))
-            TextField(help, text: value)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 200)
-                .font(.system(size: 12, design: .monospaced))
-            Text(help)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-    }
+    // advancedTab removed — settings are now per-remote in RemoteDetailView
 
     // MARK: - Settings Tab
 
     private var settingsTab: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
+                settingsHowItWorksSection
                 settingsRcloneSection
                 settingsMountSection
                 settingsStartupSection
@@ -263,6 +165,35 @@ struct ConfigWindow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
+
+    private var settingsHowItWorksSection: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("How SkyHook Works", systemImage: "info.circle.fill")
+                    .font(.headline)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("SkyHook mounts your cloud storage as native Finder volumes using rclone's WebDAV server.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text("**Hosts File**: The first time you mount a remote, SkyHook adds an entry to /etc/hosts (e.g. `127.0.0.1 Dropbox`) so the volume appears with a clean name in Finder. This requires a one-time admin password or Touch ID prompt per remote. The entry persists so you won't be prompted again for that remote.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text("**Cleanup**: Hosts entries are tagged with `# SkyHook` and automatically removed when you delete a remote. If the app crashes, orphaned entries are cleaned up on next launch.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Text("**No passwords stored**: SkyHook never stores your admin password. It uses the native macOS authorization dialog only when needed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(8)
+        }
+    }
+
 
     private var settingsRcloneSection: some View {
         GroupBox {
@@ -569,6 +500,10 @@ struct RemoteDetailView: View {
                     }
                 }
 
+                // Performance (per-remote)
+                PerRemoteSettingsView(remote: remote)
+                    .environmentObject(rclone)
+
                 // Options
                 GroupBox("Options") {
                     VStack(alignment: .leading, spacing: 10) {
@@ -601,14 +536,29 @@ struct RemoteDetailView: View {
                     Button {
                         Task { await rclone.toggleMount(remote) }
                     } label: {
-                        Label(
-                            rclone.mountStatus(for: remote) == .mounted ? "Unmount" : "Mount",
-                            systemImage: rclone.mountStatus(for: remote) == .mounted ? "eject.fill" : "play.fill"
-                        )
+                        HStack(spacing: 6) {
+                            if rclone.mountStatus(for: remote) == .mounting || rclone.mountStatus(for: remote) == .unmounting {
+                                ProgressView()
+                                    .scaleEffect(0.6)
+                                    .frame(width: 14, height: 14)
+                            }
+                            Label({
+                                switch rclone.mountStatus(for: remote) {
+                                case .mounted: return "Unmount"
+                                case .mounting: return "Mounting..."
+                                case .unmounting: return "Unmounting..."
+                                default: return "Mount"
+                                }
+                            }() as String,
+                            systemImage: rclone.mountStatus(for: remote) == .mounted ? "eject.fill" : "play.fill")
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(rclone.mountStatus(for: remote) == .mounted ? .red : .accentColor)
-                    .disabled(!rclone.isRcloneInstalled)
+                    .disabled({
+                        let status = rclone.mountStatus(for: remote)
+                        return status == .mounting || status == .unmounting || !rclone.isRcloneInstalled
+                    }())
 
                     Button {
                         editSession.start(
@@ -711,6 +661,78 @@ struct RemoteDetailView: View {
         case "webdav": return [.purple, .indigo]
         case "ftp": return [.teal, .blue]
         default: return [.gray, .secondary]
+        }
+    }
+}
+
+// MARK: - Per-Remote Settings View
+
+struct PerRemoteSettingsView: View {
+    let remote: Remote
+    @EnvironmentObject var rclone: RcloneService
+    @State private var settings: RemoteSettings = RemoteSettings.defaults(for: "")
+    @State private var isExpanded = false
+
+    var body: some View {
+        GroupBox {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Optimized defaults for \(remote.displayType). Adjust only if needed.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+
+                    settingsField("Cache Mode", value: $settings.vfsCacheMode, help: "off, minimal, writes, full")
+                    settingsField("Cache Max Age", value: $settings.vfsCacheMaxAge, help: "e.g. 1h, 24h")
+                    settingsField("Cache Max Size", value: $settings.vfsCacheMaxSize, help: "e.g. 1G, 10G")
+                    settingsField("Read Chunk Size", value: $settings.vfsReadChunkSize, help: "e.g. 4M, 32M, 64M")
+                    settingsField("Cache Poll", value: $settings.vfsCachePollInterval, help: "e.g. 30s, 1m")
+                    settingsField("Buffer Size", value: $settings.bufferSize, help: "e.g. 256k, 512k")
+                    settingsField("Transfers", value: $settings.transfers, help: "e.g. 4, 8, 16")
+                    settingsField("Dir Cache Time", value: $settings.dirCacheTime, help: "e.g. 1m, 5m")
+                    settingsField("Read Ahead", value: $settings.vfsReadAhead, help: "e.g. 32M, 128M")
+                    settingsField("Extra Flags", value: $settings.extraFlags, help: "--flag value")
+
+                    HStack {
+                        Button("Reset to Defaults") {
+                            RemoteSettings.delete(for: remote.name)
+                            let fresh = RemoteSettings.defaults(for: remote.type)
+                            settings = fresh
+                            fresh.save(for: remote.name)
+                        }
+                        .controlSize(.small)
+
+                        Spacer()
+
+                        Text("Changes apply on next mount")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.top, 4)
+                }
+                .padding(.top, 8)
+            } label: {
+                Text("Performance")
+            }
+            .padding(6)
+        }
+        .onAppear {
+            settings = RemoteSettings.load(for: remote.name, type: remote.type)
+        }
+        .onChange(of: settings) { _, newValue in
+            newValue.save(for: remote.name)
+        }
+    }
+
+    private func settingsField(_ label: String, value: Binding<String>, help: String) -> some View {
+        HStack {
+            Text(label + ":")
+                .frame(width: 120, alignment: .trailing)
+                .foregroundStyle(.secondary)
+                .font(.system(size: 11))
+            TextField(help, text: value)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 160)
+                .font(.system(size: 11, design: .monospaced))
         }
     }
 }

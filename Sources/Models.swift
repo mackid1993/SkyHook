@@ -20,6 +20,112 @@ struct Remote: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
+// MARK: - Remote Settings (per-remote, provider-aware defaults)
+
+struct RemoteSettings: Codable, Equatable {
+    var vfsCacheMode: String
+    var vfsCacheMaxAge: String
+    var vfsCacheMaxSize: String
+    var vfsReadChunkSize: String
+    var vfsCachePollInterval: String
+    var bufferSize: String
+    var transfers: String
+    var dirCacheTime: String
+    var vfsReadAhead: String
+    var extraFlags: String
+
+    /// Provider-aware defaults
+    static func defaults(for type: String) -> RemoteSettings {
+        switch type {
+        case "sftp", "ftp":
+            return RemoteSettings(
+                vfsCacheMode: "minimal", vfsCacheMaxAge: "1h", vfsCacheMaxSize: "10G",
+                vfsReadChunkSize: "4M", vfsCachePollInterval: "1m",
+                bufferSize: "256k", transfers: "4", dirCacheTime: "2m",
+                vfsReadAhead: "32M", extraFlags: "")
+        case "s3", "b2", "gcs", "azureblob", "swift":
+            return RemoteSettings(
+                vfsCacheMode: "writes", vfsCacheMaxAge: "1h", vfsCacheMaxSize: "10G",
+                vfsReadChunkSize: "4M", vfsCachePollInterval: "1m",
+                bufferSize: "512k", transfers: "16", dirCacheTime: "2m",
+                vfsReadAhead: "32M", extraFlags: "")
+        case "drive", "gphotos":
+            return RemoteSettings(
+                vfsCacheMode: "writes", vfsCacheMaxAge: "1h", vfsCacheMaxSize: "10G",
+                vfsReadChunkSize: "32M", vfsCachePollInterval: "1m",
+                bufferSize: "256k", transfers: "8", dirCacheTime: "5m",
+                vfsReadAhead: "32M", extraFlags: "")
+        case "dropbox":
+            return RemoteSettings(
+                vfsCacheMode: "writes", vfsCacheMaxAge: "1h", vfsCacheMaxSize: "10G",
+                vfsReadChunkSize: "64M", vfsCachePollInterval: "1m",
+                bufferSize: "256k", transfers: "8", dirCacheTime: "3m",
+                vfsReadAhead: "32M", extraFlags: "")
+        case "onedrive", "sharefile":
+            return RemoteSettings(
+                vfsCacheMode: "writes", vfsCacheMaxAge: "1h", vfsCacheMaxSize: "10G",
+                vfsReadChunkSize: "32M", vfsCachePollInterval: "1m",
+                bufferSize: "256k", transfers: "8", dirCacheTime: "3m",
+                vfsReadAhead: "32M", extraFlags: "")
+        default:
+            return RemoteSettings(
+                vfsCacheMode: "writes", vfsCacheMaxAge: "1h", vfsCacheMaxSize: "10G",
+                vfsReadChunkSize: "32M", vfsCachePollInterval: "1m",
+                bufferSize: "256k", transfers: "8", dirCacheTime: "2m",
+                vfsReadAhead: "32M", extraFlags: "")
+        }
+    }
+
+    func buildFlags() -> [String] {
+        var flags: [String] = []
+        if !vfsCacheMode.isEmpty { flags += ["--vfs-cache-mode", vfsCacheMode] }
+        if !vfsCacheMaxAge.isEmpty { flags += ["--vfs-cache-max-age", vfsCacheMaxAge] }
+        if !vfsCacheMaxSize.isEmpty { flags += ["--vfs-cache-max-size", vfsCacheMaxSize] }
+        if !vfsReadChunkSize.isEmpty { flags += ["--vfs-read-chunk-size", vfsReadChunkSize] }
+        if !vfsCachePollInterval.isEmpty { flags += ["--vfs-cache-poll-interval", vfsCachePollInterval] }
+        if !bufferSize.isEmpty { flags += ["--buffer-size", bufferSize] }
+        if !transfers.isEmpty { flags += ["--transfers", transfers] }
+        if !dirCacheTime.isEmpty { flags += ["--dir-cache-time", dirCacheTime] }
+        if !vfsReadAhead.isEmpty { flags += ["--vfs-read-ahead", vfsReadAhead] }
+        flags += ["--vfs-fast-fingerprint"]
+        if !extraFlags.isEmpty {
+            flags += extraFlags.components(separatedBy: " ").filter { !$0.isEmpty }
+        }
+        return flags
+    }
+
+    // MARK: - Persistence
+
+    static func load(for remoteName: String, type: String) -> RemoteSettings {
+        let key = "remoteSettings_\(remoteName)"
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let settings = try? JSONDecoder().decode(RemoteSettings.self, from: data) else {
+            return defaults(for: type)
+        }
+        return settings
+    }
+
+    func save(for remoteName: String) {
+        let key = "remoteSettings_\(remoteName)"
+        if let data = try? JSONEncoder().encode(self) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    static func delete(for remoteName: String) {
+        UserDefaults.standard.removeObject(forKey: "remoteSettings_\(remoteName)")
+    }
+}
+
+// MARK: - Retry State
+
+struct RetryState {
+    var attempts: Int = 0
+    var lastAttempt: Date = .distantPast
+    static let maxAttempts = 3
+    static let backoffIntervals: [TimeInterval] = [5, 15, 30]
+}
+
 // MARK: - Mount Status
 
 enum MountStatus: Equatable {
