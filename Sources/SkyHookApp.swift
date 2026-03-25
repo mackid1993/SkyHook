@@ -89,10 +89,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // 4. Kill rclone
+        // 4. Kill only SkyHook-tagged rclone processes
         let kill = Process()
-        kill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        kill.arguments = ["-f", "rclone serve"]
+        kill.executableURL = URL(fileURLWithPath: "/bin/sh")
+        kill.arguments = ["-c", "for pid in $(pgrep -f 'rclone serve'); do if ps eww -p $pid 2>/dev/null | grep -q SKYHOOK=1; then kill $pid; fi; done"]
         kill.standardOutput = FileHandle.nullDevice
         kill.standardError = FileHandle.nullDevice
         try? kill.run()

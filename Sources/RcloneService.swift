@@ -607,6 +607,7 @@ class RcloneService: ObservableObject {
 
         let server = Process()
         server.executableURL = URL(fileURLWithPath: rclone)
+        server.environment = ProcessInfo.processInfo.environment.merging(["SKYHOOK": "1"]) { _, new in new }
         server.arguments = ["serve", "webdav", remotePath,
                             "--addr", "127.0.0.1:\(port)",
                             "--fast-list",
@@ -987,8 +988,8 @@ class RcloneService: ObservableObject {
     // MARK: - Orphan Cleanup
 
     private func cleanupOrphans() async {
-        // Kill stale rclone serve processes from prior crashed sessions
-        _ = await runProcess("/usr/bin/pkill", args: ["-f", "rclone serve"])
+        // Kill stale rclone serve processes from prior crashed sessions (only SkyHook-tagged ones)
+        _ = await runProcess("/bin/sh", args: ["-c", "for pid in $(pgrep -f 'rclone serve'); do if ps eww -p $pid 2>/dev/null | grep -q SKYHOOK=1; then kill $pid; fi; done"])
         try? await Task.sleep(nanoseconds: 500_000_000)
 
         // Unmount dead WebDAV mounts on localhost

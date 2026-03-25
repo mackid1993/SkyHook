@@ -139,7 +139,7 @@ class TransferMonitor: ObservableObject {
                     bytes: t.bytes,
                     speed: t.speed,
                     percentage: t.percentage,
-                    isUpload: t.name.contains("upload") // heuristic
+                    isUpload: false // rclone RC doesn't expose transfer direction
                 ))
             }
         }
@@ -273,8 +273,8 @@ struct TransferActivityView: View {
                     VStack(spacing: 4) {
                         ForEach(transfers) { transfer in
                             HStack(spacing: 8) {
-                                Image(systemName: transfer.isUpload ? "arrow.up.circle.fill" : "arrow.down.circle.fill")
-                                    .foregroundStyle(transfer.isUpload ? .orange : .blue)
+                                Image(systemName: "arrow.up.arrow.down.circle.fill")
+                                    .foregroundStyle(.blue)
                                     .font(.caption)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(transfer.name)
