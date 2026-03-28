@@ -36,7 +36,7 @@ public partial class App : Application
         _trayIcon = new TaskbarIcon
         {
             ToolTipText = "SkyHook",
-            Icon = CreateTrayIcon(false),
+            Icon = GetAppIcon(),
             MenuActivation = PopupActivationMode.RightClick,
             ContextMenu = CreateContextMenu()
         };
@@ -48,7 +48,7 @@ public partial class App : Application
         _trayTimer.Tick += (_, _) =>
         {
             bool hasMounted = RcloneService.Instance.MountedCount > 0;
-            _trayIcon.Icon = CreateTrayIcon(hasMounted);
+            _trayIcon.Icon = GetAppIcon();
             _trayIcon.ToolTipText = hasMounted
                 ? $"SkyHook — {RcloneService.Instance.MountedCount} mounted"
                 : "SkyHook";
@@ -111,19 +111,15 @@ public partial class App : Application
         return menu;
     }
 
-    private static Icon CreateTrayIcon(bool active)
+    private static Icon? _appIcon;
+
+    private static Icon GetAppIcon()
     {
-        var bmp = new Bitmap(16, 16);
-        using var g = Graphics.FromImage(bmp);
-        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        var color = active ? System.Drawing.Color.FromArgb(108, 203, 95) : System.Drawing.Color.FromArgb(150, 150, 150);
-        using var brush = new SolidBrush(color);
-        // Cloud shape
-        g.FillEllipse(brush, 3, 5, 10, 8);
-        g.FillEllipse(brush, 1, 7, 7, 7);
-        g.FillEllipse(brush, 8, 7, 7, 7);
-        g.FillEllipse(brush, 5, 3, 7, 7);
-        return Icon.FromHandle(bmp.GetHicon());
+        if (_appIcon != null) return _appIcon;
+        var uri = new Uri("pack://application:,,,/Resources/icon.ico");
+        using var stream = Application.GetResourceStream(uri)?.Stream;
+        _appIcon = stream != null ? new Icon(stream, 16, 16) : SystemIcons.Application;
+        return _appIcon;
     }
 
     protected override void OnExit(ExitEventArgs e)
