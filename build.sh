@@ -35,6 +35,21 @@ lipo -create "$BUILD_DIR/${APP_NAME}_arm64" "$BUILD_DIR/${APP_NAME}_x86_64" \
 
 rm -f "$BUILD_DIR/${APP_NAME}_arm64" "$BUILD_DIR/${APP_NAME}_x86_64"
 
+# Build NFS filter proxy helper
+echo "  Building NFS proxy helper..."
+build_proxy() {
+    local ARCH=$1
+    local TARGET="${ARCH}-apple-macos14.0"
+    local FLAGS="-target $TARGET -sdk $SDK -O"
+    swiftc $FLAGS -o "$BUILD_DIR/skyhook-nfs-proxy_${ARCH}" Sources/NFSProxy/main.swift
+}
+build_proxy arm64
+build_proxy x86_64
+lipo -create "$BUILD_DIR/skyhook-nfs-proxy_arm64" "$BUILD_DIR/skyhook-nfs-proxy_x86_64" \
+    -output "$APP/Contents/Resources/skyhook-nfs-proxy"
+chmod 755 "$APP/Contents/Resources/skyhook-nfs-proxy"
+rm -f "$BUILD_DIR/skyhook-nfs-proxy_arm64" "$BUILD_DIR/skyhook-nfs-proxy_x86_64"
+
 cp Resources/Info.plist "$APP/Contents/"
 if [ -f Resources/SkyHook.icns ]; then
     cp Resources/SkyHook.icns "$APP/Contents/Resources/"

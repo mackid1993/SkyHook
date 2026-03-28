@@ -178,15 +178,15 @@ struct ConfigWindow: View {
                     .font(.headline)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("SkyHook mounts your cloud storage as native Finder volumes using rclone's WebDAV server.")
+                    Text("SkyHook mounts your cloud storage as native volumes using rclone's NFS server with an Apple Double filter proxy that prevents ._* and .DS_Store files from reaching your remotes.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    Text("**Hosts File**: The first time you mount a remote, SkyHook adds an entry to /etc/hosts (e.g. `127.0.0.1 Dropbox`) so the volume appears with a clean name in Finder. This requires a one-time admin password or Touch ID prompt per remote. The entry persists so you won't be prompted again for that remote.")
+                    Text("**Mount Point**: Volumes are mounted to ~/mnt by default (e.g. ~/mnt/Dropbox). You can change the default location in Settings or set a custom mount point per remote in Advanced Settings. No admin password required.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
-                    Text("**Cleanup**: Hosts entries are tagged with `# SkyHook` and automatically removed when you delete a remote. If the app crashes, orphaned entries are cleaned up on next launch.")
+                    Text("**Cleanup**: Mount points are automatically removed when you unmount or delete a remote. If the app crashes, orphaned mounts are cleaned up on next launch.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -275,9 +275,23 @@ struct ConfigWindow: View {
                 Label("Mounting", systemImage: "externaldrive.fill")
                     .font(.headline)
 
-                Text("Mounts cloud storage as a WebDAV volume via Finder.")
+                Text("Mounts cloud storage as an NFS volume. Apple Double files are filtered at the protocol level.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                HStack {
+                    Text("Default Mount Path:")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    TextField("~/mnt", text: $rclone.defaultMountBase)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                        .frame(maxWidth: 200)
+                }
+
+                Text("Volumes mount to this directory. No admin password required for user-writable paths. Override per remote in Advanced Settings.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
             .padding(8)
         }
@@ -503,6 +517,26 @@ struct RemoteDetailView: View {
                             .disabled(!rclone.isRcloneInstalled)
                         }
                     }
+                }
+
+                // Mount point (per-remote)
+                GroupBox {
+                    HStack {
+                        Text("Mount Point:")
+                            .frame(width: 80, alignment: .trailing)
+                            .foregroundStyle(.secondary)
+                            .font(.system(size: 11))
+                        TextField("~/mnt/\(remote.name)", text: Binding(
+                            get: { UserDefaults.standard.string(forKey: "mountPoint_\(remote.name)") ?? "" },
+                            set: { UserDefaults.standard.set($0, forKey: "mountPoint_\(remote.name)") }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 11, design: .monospaced))
+                        Text("Leave blank for default")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(6)
                 }
 
                 // Performance (per-remote)

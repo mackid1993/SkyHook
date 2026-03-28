@@ -17,7 +17,9 @@ class RcloneService: ObservableObject {
 
     // MARK: - Settings
 
-    @AppStorage("defaultMountBase") var defaultMountBase: String = "/Volumes"
+    @AppStorage("defaultMountBase") var defaultMountBase: String = {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("mnt").path
+    }()
     @AppStorage("autoMountOnLaunch") var autoMountOnLaunch: Bool = false
     @AppStorage("launchAtLogin") var launchAtLogin: Bool = false {
         didSet { updateLaunchAtLogin() }
@@ -29,10 +31,11 @@ class RcloneService: ObservableObject {
 
     // MARK: - Private
 
-    private var serverProcesses: [String: Process] = [:]
-    private var mountHostnames: [String: String] = [:]  // remote name -> volume hostname
-    private var mountPorts: [String: Int] = [:]          // remote name -> server port
-    private var nextPort = 19200
+    private var serverProcesses: [String: Process] = [:]   // rclone serve nfs
+    private var proxyProcesses: [String: Process] = [:]   // NFS filter proxy (compiled helper)
+    private var mountPoints: [String: String] = [:]       // remote name -> mount path
+    private var nextNFSPort = 19200
+    private var nextProxyPort = 19300
     private var nextRCPort = 19400
     private var retryStates: [String: RetryState] = [:]
     private var consecutiveFailures: [String: Int] = [:]
@@ -437,9 +440,6 @@ class RcloneService: ObservableObject {
             if !rclone.isEmpty {
                 _ = await runProcess(rclone, args: ["config", "delete", name])
             }
-            // Remove hosts entry for this remote
-            let hostname = name.replacingOccurrences(of: " ", with: "-")
-            await removeHostEntry(hostname)
             UserDefaults.standard.removeObject(forKey: "autoMount_\(name)")
             UserDefaults.standard.removeObject(forKey: "remotePath_\(name)")
             RemoteSettings.delete(for: name)
@@ -505,9 +505,7 @@ class RcloneService: ObservableObject {
         let maxAttempts = 3
 
         for attempt in 1...maxAttempts {
-            let port = nextPort
-            nextPort += 1
-            await mountWebDAV(remote: remote, port: port)
+            await mountNFS(remote: remote)
 
             if mountStatuses[name] == .mounted { return }
 
@@ -536,21 +534,23 @@ class RcloneService: ObservableObject {
 
         mountStatuses[name] = .unmounting
 
-        // Kill the rclone server process FIRST to unblock any stuck I/O
+        // Kill rclone and proxy processes to unblock any stuck I/O
         if let process = serverProcesses[name] {
             if process.isRunning { process.terminate() }
             try? await Task.sleep(nanoseconds: 500_000_000)
             if process.isRunning { process.interrupt() }
             serverProcesses.removeValue(forKey: name)
         }
+        if let proxy = proxyProcesses[name] {
+            if proxy.isRunning { proxy.terminate() }
+            proxyProcesses.removeValue(forKey: name)
+        }
 
         TransferMonitor.shared.unregisterRC(remoteName: name)
-        let volName = mountHostnames[name] ?? name
-        let mountPath = "\(defaultMountBase)/\(volName)"
-        _ = await runProcess("/usr/sbin/diskutil", args: ["unmount", "force", mountPath])
-        // Hosts entry stays — only removed when remote is deleted
-        mountHostnames.removeValue(forKey: name)
-        mountPorts.removeValue(forKey: name)
+        let mountPath = mountPoints[name] ?? "\(defaultMountBase)/\(name)"
+        _ = await runProcess("/sbin/umount", args: [mountPath])
+        try? FileManager.default.removeItem(atPath: mountPath)
+        mountPoints.removeValue(forKey: name)
         retryStates.removeValue(forKey: name)
         consecutiveFailures.removeValue(forKey: name)
 
@@ -565,17 +565,16 @@ class RcloneService: ObservableObject {
         }
     }
 
-    // MARK: - WebDAV Mount
+    // MARK: - NFS Mount
 
     /// Pick a volume name for this remote, appending a number if the name is taken.
-    /// Cleans up stale empty mount point directories from prior sessions (needs root since /Volumes is root-owned).
-    private func volumeHostname(for name: String) async -> String {
+    private func volumeName(for name: String) -> String {
         let fm = FileManager.default
         let base = name.replacingOccurrences(of: " ", with: "-")
         let path = "\(defaultMountBase)/\(base)"
         if fm.fileExists(atPath: path) {
             if let contents = try? fm.contentsOfDirectory(atPath: path), contents.isEmpty {
-                _ = await runAppleScript("do shell script \"rmdir '\(path)'\" with administrator privileges")
+                try? fm.removeItem(atPath: path)
             }
         }
         if !fm.fileExists(atPath: path) { return base }
@@ -589,30 +588,49 @@ class RcloneService: ObservableObject {
         RemoteSettings.load(for: remote.name, type: remote.type)
     }
 
-    private func mountWebDAV(remote: Remote, port: Int) async {
+    /// Path to the compiled NFS filter proxy helper.
+    private var nfsProxyPath: String {
+        let bundled = Bundle.main.resourcePath.map { "\($0)/skyhook-nfs-proxy" } ?? ""
+        if FileManager.default.fileExists(atPath: bundled) { return bundled }
+        return installDir.appendingPathComponent("skyhook-nfs-proxy").path
+    }
+
+    private func mountNFS(remote: Remote) async {
         let name = remote.name
         let rclone = effectiveRclonePath
         let subpath = remote.remotePath.isEmpty ? "" : remote.remotePath
         let remotePath = "\(name):\(subpath)"
-        let hostname = await volumeHostname(for: name)
+        // Per-remote mount point override, or default ~/mnt/RemoteName
+        let customMount = UserDefaults.standard.string(forKey: "mountPoint_\(name)") ?? ""
+        let mountPath: String
+        if !customMount.isEmpty {
+            mountPath = (customMount as NSString).expandingTildeInPath
+        } else {
+            let volName = volumeName(for: name)
+            mountPath = "\(defaultMountBase)/\(volName)"
+        }
+        let nfsPort = nextNFSPort
+        nextNFSPort += 1
+        let proxyPort = nextProxyPort
+        nextProxyPort += 1
         let rcPort = nextRCPort
         nextRCPort += 1
 
-        // Load per-remote settings (provider-aware defaults if not customized)
         let settings = RemoteSettings.load(for: name, type: remote.type)
 
         // Kill anything already on these ports
-        _ = await runProcess("/bin/sh", args: ["-c", "lsof -ti :\(port) -ti :\(rcPort) | xargs kill -9 2>/dev/null; true"])
+        _ = await runProcess("/bin/sh", args: ["-c", "lsof -ti :\(nfsPort) -ti :\(proxyPort) -ti :\(rcPort) | xargs kill -9 2>/dev/null; true"])
         try? await Task.sleep(nanoseconds: 500_000_000)
 
+        // Create mount point directory
+        try? FileManager.default.createDirectory(atPath: mountPath, withIntermediateDirectories: true)
+
+        // 1. Start rclone serve nfs
         let server = Process()
         server.executableURL = URL(fileURLWithPath: rclone)
         server.environment = ProcessInfo.processInfo.environment.merging(["SKYHOOK": "1"]) { _, new in new }
-        server.arguments = ["serve", "webdav", remotePath,
-                            "--addr", "127.0.0.1:\(port)",
-                            "--fast-list",
-                            "--exclude", ".DS_Store",
-                            "--exclude", "._*",
+        server.arguments = ["serve", "nfs", remotePath,
+                            "--addr", "127.0.0.1:\(nfsPort)",
                             "--rc", "--rc-addr", "127.0.0.1:\(rcPort)", "--rc-no-auth"]
                             + settings.buildFlags()
         server.standardOutput = FileHandle.nullDevice
@@ -620,7 +638,7 @@ class RcloneService: ObservableObject {
         server.standardError = errPipe
 
         do { try server.run() } catch {
-            mountStatuses[name] = .error("Failed to start WebDAV server")
+            mountStatuses[name] = .error("Failed to start NFS server")
             return
         }
 
@@ -630,99 +648,76 @@ class RcloneService: ObservableObject {
         guard server.isRunning else {
             let errData = errPipe.fileHandleForReading.availableData
             let errStr = String(data: errData, encoding: .utf8) ?? ""
-            mountStatuses[name] = .error("WebDAV: \(errStr.components(separatedBy: "\n").last(where: { !$0.isEmpty }) ?? "server exited")")
+            mountStatuses[name] = .error(errStr.components(separatedBy: "\n").last(where: { !$0.isEmpty }) ?? "NFS server exited")
             serverProcesses.removeValue(forKey: name)
             return
         }
 
-        // Verify WebDAV server is responding
-        let ready = await waitForWebDAV(port: port, timeout: 10)
-        if !ready {
-            let errData = errPipe.fileHandleForReading.availableData
-            let errStr = String(data: errData, encoding: .utf8) ?? ""
-            let lastLine = errStr.components(separatedBy: "\n").last(where: { !$0.isEmpty }) ?? "Server not responding"
-            let cleanErr = lastLine
-                .replacingOccurrences(of: ".*CRITICAL: ", with: "", options: .regularExpression)
-                .replacingOccurrences(of: ".*ERROR: ", with: "", options: .regularExpression)
-            mountStatuses[name] = .error(cleanErr)
+        // 2. Start NFS filter proxy (blocks ._* and .DS_Store at the RPC level)
+        let proxyPath = nfsProxyPath
+        guard FileManager.default.fileExists(atPath: proxyPath) else {
+            mountStatuses[name] = .error("NFS proxy helper not found")
             server.terminate()
             serverProcesses.removeValue(forKey: name)
             return
         }
 
-        // Add hostname to /etc/hosts — user sees explanation + admin password prompt
-        let hostsOk = await addHostEntry(hostname)
-        if !hostsOk {
-            mountStatuses[name] = .error("Cancelled — admin access is required for hosts entry")
+        let proxy = Process()
+        proxy.executableURL = URL(fileURLWithPath: proxyPath)
+        proxy.arguments = ["\(proxyPort)", "\(nfsPort)"]
+        proxy.environment = ["SKYHOOK": "1"]
+        proxy.standardOutput = FileHandle.nullDevice
+        proxy.standardError = FileHandle.nullDevice
+
+        do { try proxy.run() } catch {
+            mountStatuses[name] = .error("Failed to start NFS proxy")
             server.terminate()
             serverProcesses.removeValue(forKey: name)
             return
         }
 
-        // Flush DNS so the hostname resolves immediately
-        _ = await runProcess("/usr/bin/dscacheutil", args: ["-flushcache"])
+        proxyProcesses[name] = proxy
+        try? await Task.sleep(nanoseconds: 500_000_000)
 
-        // Mount via Finder — volume name = hostname = pretty name in sidebar
-        let (success, errorMsg) = await runAppleScript("""
-            tell application "Finder"
-                mount volume "http://\(hostname):\(port)"
-            end tell
-        """)
+        // 3. Mount via mount_nfs (no sudo needed for user-writable dirs)
+        let mountOk = await runProcess("/sbin/mount_nfs", args: [
+            "-o", "port=\(proxyPort),mountport=\(proxyPort),vers=3,tcp,locallocks,soft,rsize=1048576,wsize=1048576",
+            "127.0.0.1:/", mountPath
+        ])
 
-        if success {
-            mountHostnames[name] = hostname
-            mountPorts[name] = port
+        if mountOk {
+            mountPoints[name] = mountPath
             mountStatuses[name] = .mounted
             TransferMonitor.shared.registerRC(remoteName: name, port: rcPort)
         } else {
-            // Clean up hosts entry on failure
-            await removeHostEntry(hostname)
-            mountStatuses[name] = .error(errorMsg ?? "Mount failed")
+            mountStatuses[name] = .error("mount_nfs failed")
+            proxy.terminate()
+            proxyProcesses.removeValue(forKey: name)
             server.terminate()
             serverProcesses.removeValue(forKey: name)
+            try? FileManager.default.removeItem(atPath: mountPath)
         }
-    }
-
-    // MARK: - Hosts File
-
-    /// Add a hostname entry to /etc/hosts. Shows a confirmation dialog on first
-    /// mount, then the macOS admin password prompt. Returns false if the user cancels.
-    private func addHostEntry(_ hostname: String) async -> Bool {
-        let safe = hostname.replacingOccurrences(of: " ", with: "-")
-        let hostsContent = (try? String(contentsOfFile: "/etc/hosts", encoding: .utf8)) ?? ""
-        if hostsContent.contains("127.0.0.1\t\(safe)") { return true }
-
-        // Show explanation dialog before the admin password prompt
-        let (confirmed, _) = await runAppleScript("""
-            display dialog "SkyHook needs to add an entry to /etc/hosts so this volume appears with a clean name in Finder.\\n\\nYou'll be prompted for your admin password next." with title "SkyHook — Hosts File" with icon note buttons {"Cancel", "OK"} default button "OK"
-        """)
-        guard confirmed else { return false }
-
-        let (ok, _) = await runAppleScript("do shell script \"printf '\\n127.0.0.1\\t\(safe) # SkyHook\\n' >> /etc/hosts\" with administrator privileges")
-        return ok
-    }
-
-    /// Remove a hostname entry from /etc/hosts.
-    private func removeHostEntry(_ hostname: String) async {
-        let safe = hostname.replacingOccurrences(of: " ", with: "-")
-            .replacingOccurrences(of: ".", with: "\\.")
-        _ = await runAppleScript("do shell script \"sed -i '' '/\(safe).*# SkyHook/d' /etc/hosts\" with administrator privileges")
-    }
-
-    /// Remove ALL SkyHook entries from /etc/hosts.
-    func removeAllHostEntries() async {
-        _ = await runAppleScript("do shell script \"sed -i '' '/# SkyHook/d' /etc/hosts\" with administrator privileges")
     }
 
     // MARK: - Helpers
 
-    /// Poll the WebDAV server until it responds or timeout (seconds) expires.
-    private func waitForWebDAV(port: Int, timeout: Int) async -> Bool {
+    /// Wait for a TCP port to accept connections.
+    private func waitForPort(port: Int, timeout: Int) async -> Bool {
         for _ in 0..<(timeout * 2) {
             let ok = await Task.detached {
-                var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/")!)
-                req.timeoutInterval = 2
-                return (try? await URLSession.shared.data(for: req)).map { _ in true } ?? false
+                let fd = socket(AF_INET, SOCK_STREAM, 0)
+                guard fd >= 0 else { return false }
+                defer { close(fd) }
+                var addr = sockaddr_in()
+                addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+                addr.sin_family = sa_family_t(AF_INET)
+                addr.sin_port = UInt16(port).bigEndian
+                addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+                return withUnsafePointer(to: &addr) {
+                    $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                        connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) == 0
+                    }
+                }
             }.value
             if ok { return true }
             try? await Task.sleep(nanoseconds: 500_000_000)
@@ -837,16 +832,14 @@ class RcloneService: ObservableObject {
     }
 
     private func handleExternalUnmount(volumePath: String) {
-        for (name, hostname) in mountHostnames {
-            let expected = "\(defaultMountBase)/\(hostname)"
-            if volumePath == expected {
-                if let process = serverProcesses[name], process.isRunning {
-                    process.terminate()
-                }
+        for (name, path) in mountPoints {
+            if volumePath == path {
+                if let process = serverProcesses[name], process.isRunning { process.terminate() }
                 serverProcesses.removeValue(forKey: name)
+                if let proxy = proxyProcesses[name], proxy.isRunning { proxy.terminate() }
+                proxyProcesses.removeValue(forKey: name)
                 TransferMonitor.shared.unregisterRC(remoteName: name)
-                mountHostnames.removeValue(forKey: name)
-                mountPorts.removeValue(forKey: name)
+                mountPoints.removeValue(forKey: name)
                 retryStates.removeValue(forKey: name)
                 consecutiveFailures.removeValue(forKey: name)
                 mountStatuses[name] = .unmounted
@@ -874,8 +867,7 @@ class RcloneService: ObservableObject {
     }
 
     func actualMountPath(for remote: Remote) -> String {
-        let volName = mountHostnames[remote.name] ?? remote.name
-        return "\(defaultMountBase)/\(volName)"
+        mountPoints[remote.name] ?? "\(defaultMountBase)/\(remote.name)"
     }
 
     // MARK: - Launch at Login
@@ -926,16 +918,17 @@ class RcloneService: ObservableObject {
                 continue
             }
 
-            // HTTP liveness check on the WebDAV port
-            if let port = mountPorts[name] {
-                let alive = await waitForWebDAV(port: port, timeout: 1)
-                if !alive {
+            // Check if mount point is still accessible
+            if let path = mountPoints[name] {
+                let accessible = FileManager.default.fileExists(atPath: path)
+                if !accessible {
                     let failures = (consecutiveFailures[name] ?? 0) + 1
                     consecutiveFailures[name] = failures
                     if failures >= 3 {
-                        // Server is unresponsive — kill and remount
                         serverProcesses[name]?.terminate()
                         serverProcesses.removeValue(forKey: name)
+                        proxyProcesses[name]?.terminate()
+                        proxyProcesses.removeValue(forKey: name)
                         await attemptAutoRemount(remote: remote)
                     }
                 } else {
@@ -965,18 +958,16 @@ class RcloneService: ObservableObject {
         retryStates[name] = state
 
         // Clean up the dead mount
-        let volName = mountHostnames[name] ?? name
-        let mountPath = "\(defaultMountBase)/\(volName)"
-        _ = await runProcess("/usr/sbin/diskutil", args: ["unmount", "force", mountPath])
+        let mountPath = mountPoints[name] ?? "\(defaultMountBase)/\(name)"
+        _ = await runProcess("/sbin/umount", args: [mountPath])
         try? FileManager.default.removeItem(atPath: mountPath)
-        mountHostnames.removeValue(forKey: name)
-        mountPorts.removeValue(forKey: name)
+        proxyProcesses[name]?.terminate()
+        proxyProcesses.removeValue(forKey: name)
+        mountPoints.removeValue(forKey: name)
 
         // Attempt remount
         mountStatuses[name] = .mounting
-        let port = nextPort
-        nextPort += 1
-        await mountWebDAV(remote: remote, port: port)
+        await mountNFS(remote: remote)
 
         // If mount succeeded, reset retry state
         if mountStatuses[name] == .mounted {
@@ -988,49 +979,24 @@ class RcloneService: ObservableObject {
     // MARK: - Orphan Cleanup
 
     private func cleanupOrphans() async {
-        // Kill stale rclone serve processes from prior crashed sessions (only SkyHook-tagged ones)
+        // Kill stale SkyHook-tagged rclone and proxy processes from prior crashed sessions
         _ = await runProcess("/bin/sh", args: ["-c", "for pid in $(pgrep -f 'rclone serve'); do if ps eww -p $pid 2>/dev/null | grep -q SKYHOOK=1; then kill $pid; fi; done"])
+        _ = await runProcess("/bin/sh", args: ["-c", "for pid in $(pgrep -f 'skyhook-nfs-proxy'); do if ps eww -p $pid 2>/dev/null | grep -q SKYHOOK=1; then kill $pid; fi; done"])
         try? await Task.sleep(nanoseconds: 500_000_000)
 
-        // Unmount dead WebDAV mounts on localhost
+        // Unmount dead NFS mounts from SkyHook (localhost NFS in mount base)
         let mountOutput = await getProcessOutput("/sbin/mount", args: [])
         for line in mountOutput.components(separatedBy: "\n") {
-            // Look for WebDAV mounts on 127.0.0.x
-            if line.contains("127.0.0.") && line.contains("webdav") {
-                // Extract mount point: "... on /Volumes/xxx (..."
+            if line.contains("localhost") && line.contains("nfs") {
                 if let onRange = line.range(of: " on "),
                    let parenRange = line.range(of: " (", range: onRange.upperBound..<line.endIndex) {
                     let mountPath = String(line[onRange.upperBound..<parenRange.lowerBound])
-                    _ = await runProcess("/usr/sbin/diskutil", args: ["unmount", "force", mountPath])
-                    try? FileManager.default.removeItem(atPath: mountPath)
+                    if mountPath.hasPrefix(defaultMountBase) {
+                        _ = await runProcess("/sbin/umount", args: [mountPath])
+                        try? FileManager.default.removeItem(atPath: mountPath)
+                    }
                 }
             }
-        }
-
-        // Clean up hosts entries for remotes that no longer exist — only if needed
-        let hostsContent = (try? String(contentsOfFile: "/etc/hosts", encoding: .utf8)) ?? ""
-        let remoteNames = Set(remotes.map { $0.name.replacingOccurrences(of: " ", with: "-") })
-        var orphanedHostnames: [String] = []
-        for line in hostsContent.components(separatedBy: "\n") where line.contains("# SkyHook") {
-            let parts = line.components(separatedBy: "\t")
-            if parts.count >= 2 {
-                let hostname = parts[1].components(separatedBy: " ").first ?? ""
-                if !hostname.isEmpty && !remoteNames.contains(hostname) {
-                    orphanedHostnames.append(hostname)
-                }
-            }
-        }
-        // Batch all orphan removals into a single admin prompt with explanation
-        if !orphanedHostnames.isEmpty {
-            let names = orphanedHostnames.joined(separator: ", ")
-            let sedCommands = orphanedHostnames.map { name in
-                let escaped = name.replacingOccurrences(of: ".", with: "\\\\.")
-                return "-e '/\(escaped).*# SkyHook/d'"
-            }.joined(separator: " ")
-            _ = await runAppleScript("""
-                display dialog "SkyHook found orphaned /etc/hosts entries from remotes that no longer exist:\\n\\n\(names)\\n\\nAdmin access is needed to clean these up." with title "SkyHook Cleanup" with icon note buttons {"Clean Up"} default button "Clean Up"
-                do shell script "sed -i '' \(sedCommands) /etc/hosts" with administrator privileges
-            """)
         }
     }
 
@@ -1057,10 +1023,13 @@ class RcloneService: ObservableObject {
         healthCheckTask?.cancel()
         healthCheckTask = nil
         await unmountAll()
-        // Hosts entries persist — they're only removed when a remote is deleted
         for (_, process) in serverProcesses {
             if process.isRunning { process.terminate() }
         }
         serverProcesses.removeAll()
+        for (_, proxy) in proxyProcesses {
+            if proxy.isRunning { proxy.terminate() }
+        }
+        proxyProcesses.removeAll()
     }
 }

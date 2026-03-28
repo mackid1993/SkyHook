@@ -48,18 +48,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // 1. Collect SkyHook hostnames from /etc/hosts
-        let hostsContent = (try? String(contentsOfFile: "/etc/hosts", encoding: .utf8)) ?? ""
-        var skyHookHostnames: Set<String> = []
-        for line in hostsContent.components(separatedBy: "\n") where line.contains("# SkyHook") {
-            let parts = line.components(separatedBy: "\t")
-            if parts.count >= 2 {
-                let hostname = parts[1].components(separatedBy: " ").first ?? ""
-                if !hostname.isEmpty { skyHookHostnames.insert(hostname) }
-            }
-        }
+        let mountBase = UserDefaults.standard.string(forKey: "defaultMountBase")
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("mnt").path
 
-        // 2. Find WebDAV mounts that belong to SkyHook
+        // 1. Find NFS mounts from SkyHook (localhost NFS in mount base)
         let check = Process()
         check.executableURL = URL(fileURLWithPath: "/sbin/mount")
         let pipe = Pipe()
@@ -69,30 +61,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         check.waitUntilExit()
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
 
-        // 3. Unmount SkyHook volumes (match by hostname or 127.0.0.x webdav)
         for line in output.components(separatedBy: "\n") {
-            guard line.contains("webdav") else { continue }
-            let isSkyHook = skyHookHostnames.contains(where: { line.contains($0) }) || line.contains("127.0.0.")
-            guard isSkyHook else { continue }
+            guard line.contains("nfs") && line.contains("localhost") else { continue }
             if let onRange = line.range(of: " on "),
                let parenRange = line.range(of: " (", range: onRange.upperBound..<line.endIndex) {
                 let mountPath = String(line[onRange.upperBound..<parenRange.lowerBound])
+                guard mountPath.hasPrefix(mountBase) else { continue }
                 let unmount = Process()
-                unmount.executableURL = URL(fileURLWithPath: "/usr/sbin/diskutil")
-                unmount.arguments = ["unmount", "force", mountPath]
+                unmount.executableURL = URL(fileURLWithPath: "/sbin/umount")
+                unmount.arguments = [mountPath]
                 unmount.standardOutput = FileHandle.nullDevice
                 unmount.standardError = FileHandle.nullDevice
                 try? unmount.run()
                 unmount.waitUntilExit()
-                // Clean up empty mount point directory
                 try? FileManager.default.removeItem(atPath: mountPath)
             }
         }
 
-        // 4. Kill only SkyHook-tagged rclone processes
+        // 2. Kill SkyHook-tagged rclone and proxy processes
         let kill = Process()
         kill.executableURL = URL(fileURLWithPath: "/bin/sh")
-        kill.arguments = ["-c", "for pid in $(pgrep -f 'rclone serve'); do if ps eww -p $pid 2>/dev/null | grep -q SKYHOOK=1; then kill $pid; fi; done"]
+        kill.arguments = ["-c", "for pid in $(pgrep -f 'rclone serve\\|skyhook-nfs-proxy'); do if ps eww -p $pid 2>/dev/null | grep -q SKYHOOK=1; then kill $pid; fi; done"]
         kill.standardOutput = FileHandle.nullDevice
         kill.standardError = FileHandle.nullDevice
         try? kill.run()
