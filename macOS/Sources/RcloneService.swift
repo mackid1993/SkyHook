@@ -683,7 +683,7 @@ class RcloneService: ObservableObject {
 
         // 3. Mount via mount_nfs (no sudo needed for user-writable dirs)
         let mountOk = await runProcess("/sbin/mount_nfs", args: [
-            "-o", "port=\(proxyPort),mountport=\(proxyPort),vers=3,tcp,locallocks,soft,rsize=1048576,wsize=1048576",
+            "-o", "port=\(proxyPort),mountport=\(proxyPort),vers=3,tcp,locallocks,soft,timeo=100,retrans=5,rsize=1048576,wsize=1048576",
             "127.0.0.1:/", mountPath
         ])
 

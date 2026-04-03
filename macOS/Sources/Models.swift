@@ -42,7 +42,7 @@ struct RemoteSettings: Codable, Equatable {
                 vfsCacheMode: "minimal", vfsCacheMaxAge: "1h", vfsCacheMaxSize: "10G",
                 vfsReadChunkSize: "4M", vfsCachePollInterval: "1m",
                 bufferSize: "256k", transfers: "4", dirCacheTime: "2m",
-                vfsReadAhead: "32M", extraFlags: "")
+                vfsReadAhead: "32M", extraFlags: "--sftp-idle-timeout 0")
         case "s3", "b2", "gcs", "azureblob", "swift":
             return RemoteSettings(
                 vfsCacheMode: "writes", vfsCacheMaxAge: "1h", vfsCacheMaxSize: "10G",
