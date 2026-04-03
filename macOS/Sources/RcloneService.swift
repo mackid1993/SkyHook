@@ -534,21 +534,23 @@ class RcloneService: ObservableObject {
 
         mountStatuses[name] = .unmounting
 
-        // Kill rclone and proxy processes to unblock any stuck I/O
+        // Unmount first while rclone is still serving, so the NFS detach is clean
+        TransferMonitor.shared.unregisterRC(remoteName: name)
+        let mountPath = mountPoints[name] ?? "\(defaultMountBase)/\(name)"
+        _ = await runProcess("/sbin/umount", args: [mountPath])
+
+        // Now kill rclone and proxy processes
+        if let proxy = proxyProcesses[name] {
+            if proxy.isRunning { proxy.terminate() }
+            proxyProcesses.removeValue(forKey: name)
+        }
         if let process = serverProcesses[name] {
             if process.isRunning { process.terminate() }
             try? await Task.sleep(nanoseconds: 500_000_000)
             if process.isRunning { process.interrupt() }
             serverProcesses.removeValue(forKey: name)
         }
-        if let proxy = proxyProcesses[name] {
-            if proxy.isRunning { proxy.terminate() }
-            proxyProcesses.removeValue(forKey: name)
-        }
 
-        TransferMonitor.shared.unregisterRC(remoteName: name)
-        let mountPath = mountPoints[name] ?? "\(defaultMountBase)/\(name)"
-        _ = await runProcess("/sbin/umount", args: [mountPath])
         try? FileManager.default.removeItem(atPath: mountPath)
         mountPoints.removeValue(forKey: name)
         retryStates.removeValue(forKey: name)

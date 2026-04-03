@@ -1,5 +1,5 @@
 /// SkyHook NFS Filter Proxy
-/// Blocks ._* (Apple Double) and .DS_Store file creation at the NFS RPC level.
+/// Blocks ._* (Apple Double) and .DS_Store lookups and creation at the NFS RPC level.
 /// Usage: skyhook-nfs-proxy <listen-port> <target-port>
 import Foundation
 
@@ -13,6 +13,13 @@ final class NFSFilterProxy {
 
     // NFS v3 procedure numbers that create files
     static let createProcs: Set<UInt32> = [8, 9, 10, 11, 14, 15]
+    // NFS v3 LOOKUP — also takes dir handle + filename
+    static let lookupProcs: Set<UInt32> = [3]
+
+    enum BlockAction {
+        case denyPerm      // NFS3ERR_PERM (1) — for create ops
+        case denyNotFound  // NFS3ERR_NOENT (2) — for lookups
+    }
 
     init(listenPort: Int, targetPort: Int) {
         self.listenPort = listenPort
@@ -108,8 +115,8 @@ final class NFSFilterProxy {
                 guard fragLen > 0, fragLen < 10_000_000 else { break }
                 guard let payload = Self.readExact(clientFd, count: fragLen) else { break }
 
-                if self.shouldBlock(payload) {
-                    let reply = self.fakeReply(payload)
+                if let action = self.shouldBlock(payload) {
+                    let reply = self.fakeReply(payload, action: action)
                     let rm = Self.buildRM(data: reply, last: true)
                     var full = rm
                     full.append(reply)
@@ -140,37 +147,45 @@ final class NFSFilterProxy {
         }
     }
 
-    private func shouldBlock(_ p: Data) -> Bool {
-        guard p.count >= 24 else { return false }
-        guard u32(p, 4) == 0 else { return false }       // CALL only
-        guard u32(p, 12) == 100003 else { return false }  // NFS program
+    private func shouldBlock(_ p: Data) -> BlockAction? {
+        guard p.count >= 24 else { return nil }
+        guard u32(p, 4) == 0 else { return nil }       // CALL only
+        guard u32(p, 12) == 100003 else { return nil }  // NFS program
         let proc = u32(p, 20)
-        guard Self.createProcs.contains(proc) else { return false }
+
+        let action: BlockAction
+        if Self.createProcs.contains(proc) {
+            action = .denyPerm
+        } else if Self.lookupProcs.contains(proc) {
+            action = .denyNotFound
+        } else {
+            return nil
+        }
 
         // Parse past credentials + verifier to get filename
-        guard p.count >= 32 else { return false }
+        guard p.count >= 32 else { return nil }
         let credLen = Int(u32(p, 28))
         let credEnd = 32 + credLen
-        guard p.count >= credEnd + 8 else { return false }
+        guard p.count >= credEnd + 8 else { return nil }
         let verifLen = Int(u32(p, credEnd + 4))
         let argsStart = credEnd + 8 + verifLen
 
         // Args: file handle (4+len padded) + filename (4+len)
-        guard p.count >= argsStart + 4 else { return false }
+        guard p.count >= argsStart + 4 else { return nil }
         let fhLen = Int(u32(p, argsStart))
         let fhPad = (fhLen + 3) & ~3
         let nameOff = argsStart + 4 + fhPad
-        guard p.count >= nameOff + 4 else { return false }
+        guard p.count >= nameOff + 4 else { return nil }
         let nameLen = Int(u32(p, nameOff))
-        guard nameLen > 0, p.count >= nameOff + 4 + nameLen else { return false }
+        guard nameLen > 0, p.count >= nameOff + 4 + nameLen else { return nil }
 
         let nameData = p[(nameOff + 4)..<(nameOff + 4 + nameLen)]
-        guard let name = String(data: nameData, encoding: .utf8) else { return false }
+        guard let name = String(data: nameData, encoding: .utf8) else { return nil }
 
-        return name.hasPrefix("._") || name == ".DS_Store"
+        return (name.hasPrefix("._") || name == ".DS_Store") ? action : nil
     }
 
-    private func fakeReply(_ p: Data) -> Data {
+    private func fakeReply(_ p: Data, action: BlockAction) -> Data {
         let xid = u32(p, 0)
         var r = Data()
         a32(&r, xid)      // XID
@@ -179,7 +194,12 @@ final class NFSFilterProxy {
         a32(&r, 0)        // AUTH_NONE verifier
         a32(&r, 0)        // verifier length
         a32(&r, 0)        // accept_stat = SUCCESS
-        a32(&r, 1)        // NFS3ERR_PERM — permission denied
+        switch action {
+        case .denyPerm:
+            a32(&r, 1)    // NFS3ERR_PERM — permission denied
+        case .denyNotFound:
+            a32(&r, 2)    // NFS3ERR_NOENT — no such file
+        }
         return r
     }
 
